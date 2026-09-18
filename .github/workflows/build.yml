@@ -1,0 +1,77 @@
+name: Build v3.29 SO
+
+on:
+  push:
+    branches: [main]
+    paths: ["hachimi_ura_plugin/**", ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Qualification greps
+        run: |
+          set -euo pipefail
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' hachimi_ura_plugin/Cargo.toml | head -1)" = "3.29.0"
+          grep -aFq 'fn il2cpp_dump_offsets' hachimi_ura_plugin/src/lib.rs
+          grep -aFq 'dump_offsets_meta' hachimi_ura_plugin/src/lib.rs
+          if grep -aq 'training_anim_skip' hachimi_ura_plugin/src/lib.rs; then echo 'anim_skip must be removed'; exit 1; fi
+          if grep -aqiE 'redact|sanitize|scrub|denylist' hachimi_ura_plugin/src/lib.rs; then echo 'desensitize words forbidden'; exit 1; fi
+
+      - name: Setup Rust
+        run: rustup target add aarch64-linux-android
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26c
+          link-to-sdk: true
+
+      - name: Build arm64 release
+        working-directory: hachimi_ura_plugin
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          CC_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          CXX_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          AR_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          HLPATCH_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -o pipefail
+          cargo build --locked --target aarch64-linux-android --release 2>&1 | tee build-cargo.log
+
+      - name: Build manifest
+        if: always()
+        run: |
+          set -euo pipefail
+          ASSET=hachimi_ura_plugin/target/aarch64-linux-android/release/libhachimi_ura.so
+          if [ -s "$ASSET" ]; then
+            SHA256=$(sha256sum "$ASSET" | cut -d' ' -f1)
+            SIZE=$(stat -c%s "$ASSET")
+            printf '%s  %s\n' "$SHA256" libhachimi_ura.so > SHA256SUMS
+            cat > BUILD-MANIFEST.txt <<EOF
+          source_commit=${GITHUB_SHA}
+          cargo_version=3.29.0
+          binary_size=$SIZE
+          binary_sha256=$SHA256
+          features=anim_skip_removed,runtime_dump_offsets,pure_data_pipeline
+          EOF
+          cat SHA256SUMS BUILD-MANIFEST.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: libhachimi_ura-v329-${{ github.sha }}
+          path: |
+            hachimi_ura_plugin/target/aarch64-linux-android/release/libhachimi_ura.so
+            hachimi_ura_plugin/build-cargo.log
+            SHA256SUMS
+            BUILD-MANIFEST.txt
+          if-no-files-found: warn

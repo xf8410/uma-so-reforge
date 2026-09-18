@@ -1,0 +1,64 @@
+name: Release v3.29.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: rustup target add aarch64-linux-android
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26c
+          link-to-sdk: true
+
+      - name: Build arm64 release
+        working-directory: hachimi_ura_plugin
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          CC_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          CXX_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          AR_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+          HLPATCH_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -o pipefail
+          cargo build --locked --target aarch64-linux-android --release 2>&1 | tee release-cargo.log
+
+      - name: Create immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET=hachimi_ura_plugin/target/aarch64-linux-android/release/libhachimi_ura.so
+          test -s "$ASSET"
+          SHA256=$(sha256sum "$ASSET" | cut -d' ' -f1)
+          printf '%s  %s\n' "$SHA256" libhachimi_ura.so > SHA256SUMS
+          if gh release view v3.29.0 > /dev/null 2>&1; then
+            echo 'v3.29.0 already exists; refusing to overwrite' >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a v3.29.0 "$GITHUB_SHA" -m "Release v3.29.0"
+          git push origin refs/tags/v3.29.0
+          gh release create v3.29.0 --verify-tag --title "v3.29.0 686重构：删演出加速+运行时偏移导出" \
+            --notes "基线=hlpatch v3.28.3 发布态源码（生成链解出）。
+
+          本版变更：
+          - 删除训练演出加速（training_anim_skip 模块/路由/注册全部移除，用户令）
+          - 新增 /il2cpp/dump_offsets_meta 与 /il2cpp/dump_offsets?letter=X：运行时全量偏移导出（字段偏移+方法地址+token，letter 分页）
+          - 纯数据管道延续：/summary 的 ai 固定 null，决策归 jueceramen
+          - 686 偏移获取：tools/dump_pipeline.py（README 有用法）
+
+          SHA256 见 SHA256SUMS。" \
+            "$ASSET" SHA256SUMS hachimi_ura_plugin/release-cargo.log
