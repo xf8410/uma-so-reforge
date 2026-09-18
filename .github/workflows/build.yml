@@ -18,7 +18,7 @@ jobs:
       - name: Qualification greps
         run: |
           set -euo pipefail
-          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' hachimi_ura_plugin/Cargo.toml | head -1)" = "3.29.0"
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' hachimi_ura_plugin/Cargo.toml | head -1)" = "3.29.1"
           grep -aFq 'fn il2cpp_dump_offsets' hachimi_ura_plugin/src/lib.rs
           grep -aFq 'dump_offsets_meta' hachimi_ura_plugin/src/lib.rs
           if grep -aq 'training_anim_skip' hachimi_ura_plugin/src/lib.rs; then echo 'anim_skip must be removed'; exit 1; fi
@@ -57,7 +57,7 @@ jobs:
             printf '%s  %s\n' "$SHA256" libhachimi_ura.so > SHA256SUMS
             cat > BUILD-MANIFEST.txt <<EOF
           source_commit=${GITHUB_SHA}
-          cargo_version=3.29.0
+          cargo_version=3.29.1
           binary_size=$SIZE
           binary_sha256=$SHA256
           features=anim_skip_removed,runtime_dump_offsets,pure_data_pipeline
