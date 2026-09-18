@@ -26896,7 +26896,7 @@ unsafe fn il2cpp_dump_offsets(letter: &str) -> String {
             let target = filter_letter.chars().next().unwrap_or('_').to_ascii_uppercase();
             if first != target { continue; }
         }
-        let ns = if get_ns.is_null() { String::new() } else {
+        let ns = if get_ns_fn.is_null() { String::new() } else {
             let p = get_ns(cls);
             if p.is_null() { String::new() } else {
                 std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
@@ -26919,11 +26919,11 @@ unsafe fn il2cpp_dump_offsets(letter: &str) -> String {
                     if ty.is_null() { return None; }
                     let fcls = tc(ty);
                     if fcls.is_null() { return None; }
-                    let np2 = get_name(fcls);
+                    let np2 = get_name(fcls as *mut c_void);
                     let cn2 = if np2.is_null() { "?".to_string() } else {
                         std::ffi::CStr::from_ptr(np2).to_string_lossy().into_owned()
                     };
-                    let np3 = get_ns(fcls);
+                    let np3 = get_ns(fcls as *mut c_void);
                     let ns2 = if np3.is_null() { String::new() } else {
                         std::ffi::CStr::from_ptr(np3).to_string_lossy().into_owned()
                     };
