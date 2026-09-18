@@ -9344,11 +9344,23 @@ fn handle_http(mut stream: std::net::TcpStream) {
         );
         let _ = stream.write_all(resp.as_bytes());
         return;
+    } else if path.starts_with("/il2cpp/dump_all_zip") {
+        // v3.29.1: 一键全量偏移打包——后台线程生成 zip 落 /sdcard Android/media（Agora 直接投递），本请求立即返回
+        std::thread::spawn(|| {
+            let r = std::panic::catch_unwind(il2cpp_dump_all_zip_impl);
+            if r.is_err() {
+                il2cpp_dump_zip_status_write("error", "panic_in_dump_thread");
+            }
+        });
+        format!(
+            "{{\"ok\":true,\"started\":true,\"status_url\":\"/il2cpp/dump_zip_status\",\"out\":\"{}/dump686.zip\"}}",
+            DUMP_ZIP_DIR
+        )
     } else if path.starts_with("/il2cpp/dump_offsets_meta") {
-        // v3.29.0: 各letter类数统计（dump流水线引导）
+        // v3.29.1: 各letter类数统计（dump流水线引导）
         unsafe { il2cpp_dump_offsets_meta() }
     } else if path.starts_with("/il2cpp/dump_offsets") {
-        // v3.29.0: 全量偏移导出（字段偏移+方法指针，letter分页）
+        // v3.29.1: 全量偏移导出（字段偏移+方法指针，letter分页）
         let letter = parse_query(&full_uri, "letter");
         unsafe { il2cpp_dump_offsets(&letter) }
     } else if path.starts_with("/il2cpp/dump_all_methods") {
@@ -26784,9 +26796,130 @@ unsafe fn il2cpp_disassemble_addr(addr_str: &str, bytes_limit: usize) -> String 
 
 // v3.22.89: 暴力dump全部类的方法目录（类名+方法名+地址+签名+静态标记）
 // 支持letter参数按A-Z分组，避免手机端一次性下载数据过大
-// ===== v3.29.0 runtime offset dump (uma-so-reforge 686) =====
+// ===== v3.29.1 runtime offset dump (uma-so-reforge 686) =====
 // 全量偏移导出：每个类的字段偏移 + 方法运行时地址 + token，按 letter 分页防卡死。
 // 用途：游戏版本更新后一次导出新版全部偏移，替代硬编码偏移表的离线猜测。
+
+// ===== v3.29.1: 一键全量偏移打包（后台线程生成 zip 落 /sdcard Android/media，Agora 直接投递） =====
+
+fn crc32_of(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for i in 0..256u32 {
+        let mut c = i;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { 0xEDB88320u32 ^ (c >> 1) } else { c >> 1 };
+        }
+        table[i as usize] = c;
+    }
+    let mut crc = 0xFFFFFFFFu32;
+    for &b in data {
+        crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    !crc
+}
+
+fn zip_push_entry(out: &mut Vec<u8>, centrals: &mut Vec<(String, u32, u32, u32)>, name: &str, data: &[u8]) {
+    let crc = crc32_of(data);
+    let offset = out.len() as u32;
+    let nb = name.as_bytes();
+    out.extend_from_slice(&0x04034b50u32.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&0u16.to_le_bytes()); // method=store
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+    out.extend_from_slice(nb);
+    out.extend_from_slice(data);
+    centrals.push((name.to_string(), crc, data.len() as u32, offset));
+}
+
+fn zip_finish(out: &mut Vec<u8>, centrals: &[(String, u32, u32, u32)]) {
+    let cd_start = out.len() as u32;
+    for (name, crc, size, off) in centrals {
+        let nb = name.as_bytes();
+        out.extend_from_slice(&0x02014b50u32.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&0u16.to_le_bytes()); // flags
+        out.extend_from_slice(&0u16.to_le_bytes()); // method
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        out.extend_from_slice(&0u16.to_le_bytes()); // disk start
+        out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        out.extend_from_slice(&off.to_le_bytes());
+        out.extend_from_slice(nb);
+    }
+    let cd_size = out.len() as u32 - cd_start;
+    out.extend_from_slice(&0x06054b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk
+    out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+    out.extend_from_slice(&(centrals.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(centrals.len() as u16).to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_start.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+}
+
+const DUMP_ZIP_DIR: &str = "/sdcard/Android/media/jp.co.cygames.umamusume/hachimi";
+
+fn il2cpp_dump_zip_status_write(state: &str, detail: &str) {
+    let _ = std::fs::create_dir_all(DUMP_ZIP_DIR);
+    let safe = detail.replace('"', "'");
+    let body = format!("{{\"state\":\"{}\",\"detail\":\"{}\"}}", state, safe);
+    let _ = std::fs::write(format!("{}/dump686_status.json", DUMP_ZIP_DIR), body);
+}
+
+fn il2cpp_dump_zip_status_read() -> String {
+    match std::fs::read_to_string(format!("{}/dump686_status.json", DUMP_ZIP_DIR)) {
+        Ok(s) => s,
+        Err(_) => "{\"state\":\"idle\"}".to_string(),
+    }
+}
+
+fn il2cpp_dump_all_zip_impl() {
+    il2cpp_dump_zip_status_write("running", "meta");
+    let t0 = std::time::Instant::now();
+    let mut out: Vec<u8> = Vec::new();
+    let mut centrals: Vec<(String, u32, u32, u32)> = Vec::new();
+    let meta = unsafe { il2cpp_dump_offsets_meta() };
+    zip_push_entry(&mut out, &mut centrals, "dump_offsets_meta.json", meta.as_bytes());
+    drop(meta);
+    for l in 'A'..='Z' {
+        il2cpp_dump_zip_status_write("running", &format!("letter_{} elapsed_sec={}", l, t0.elapsed().as_secs()));
+        let s = unsafe { il2cpp_dump_offsets(&l.to_string()) };
+        let name = format!("offsets_{}.json", l);
+        zip_push_entry(&mut out, &mut centrals, &name, s.as_bytes());
+        drop(s);
+    }
+    let note = format!(
+        "{{\"ok\":true,\"elapsed_sec\":{},\"entries\":{},\"note\":\"dump686 one-shot zip (meta + 26 letters), also saved as dump686.zip in this folder\"}}",
+        t0.elapsed().as_secs(),
+        centrals.len()
+    );
+    zip_push_entry(&mut out, &mut centrals, "note.json", note.as_bytes());
+    zip_finish(&mut out, &centrals);
+    let _ = std::fs::create_dir_all(DUMP_ZIP_DIR);
+    match std::fs::write(format!("{}/dump686.zip", DUMP_ZIP_DIR), &out) {
+        Ok(_) => il2cpp_dump_zip_status_write(
+            "done",
+            &format!("bytes={} elapsed_sec={}", out.len(), t0.elapsed().as_secs()),
+        ),
+        Err(e) => il2cpp_dump_zip_status_write("error", &format!("write_failed={}", e)),
+    }
+    println!("[dump_all_zip] done bytes={} elapsed_sec={}", out.len(), t0.elapsed().as_secs());
+}
 
 unsafe fn il2cpp_dump_offsets_meta() -> String {
     let image = get_image();

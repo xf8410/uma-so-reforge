@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """686 全量偏移 dump 流水线（uma-so-reforge v3.29.0+）
 
-前置：游戏内已注入 libhachimi_ura.so v3.29.0+，进入育成主界面（IL2CPP 已初始化）。
+前置：游戏内已注入 libhachimi_ura.so v3.29.1+，进入育成主界面（IL2CPP 已初始化）。
 用法（在能访问手机 18765 端口的环境跑）：
   adb forward tcp:18765 tcp:18765 && python3 dump_pipeline.py --out ./dump686
   或手机 Termux 直接: python3 dump_pipeline.py
+一键模式（v3.29.1+ 推荐，无需 Termux）：
+  手机浏览器开 http://127.0.0.1:18765/il2cpp/dump_all_zip 触发后台打包，
+  zip 自动落手机 /sdcard/Android/media/jp.co.cygames.umamusume/hachimi/dump686.zip，
+  进度看 /il2cpp/dump_zip_status，完成后用 Agora 从该目录投递即可。
 产物：dump_offsets_meta.json + offsets_<A-Z>.json（每个类：字段偏移 + 方法运行时地址 + token）
 """
 import argparse, json, sys, time, urllib.request
